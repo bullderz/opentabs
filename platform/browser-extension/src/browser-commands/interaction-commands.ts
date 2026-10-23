@@ -406,6 +406,24 @@ export const handleBrowserHandleDialog = async (
           await chrome.debugger.sendCommand({ tabId }, 'Page.disable').catch(() => {});
         }
       }
+    }).catch(async (error: unknown) => {
+      const message = toErrorMessage(error);
+      if (!message.startsWith('Failed to attach debugger') || !message.includes('another debugger')) {
+        throw error;
+      }
+      // A pending input can already own this extension's temporary debugger.
+      // Chrome rejects sendCommand if another extension owns the attachment.
+      try {
+        await chrome.debugger.sendCommand({ tabId }, 'Page.handleJavaScriptDialog', {
+          accept,
+          ...(promptText !== undefined ? { promptText } : {}),
+        });
+        sendSuccessResult(id, { handled: true, action });
+      } catch (err) {
+        const msg = toErrorMessage(err);
+        const isNoDialog = msg.includes('No dialog is showing') || msg.includes('no dialog');
+        sendErrorResult(id, isNoDialog ? new Error('No JavaScript dialog is currently open on this tab') : err);
+      }
     });
   } catch (err) {
     sendErrorResult(id, err);

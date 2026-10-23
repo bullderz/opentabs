@@ -18,6 +18,7 @@ vi.mock('../sanitize-error.js', () => ({
 }));
 
 vi.mock('../constants.js', () => ({
+  CDP_VERSION: '1.3',
   DEFAULT_WAIT_TIMEOUT_MS: 10000,
   POLL_INTERVAL_MS: 100,
   DEFAULT_QUERY_LIMIT: 100,
@@ -345,6 +346,9 @@ describe('handleBrowserHandleDialog', () => {
   beforeEach(() => {
     mockSendToServer.mockReset();
     mockExecuteScript.mockReset();
+    vi.mocked(chrome.debugger.attach).mockReset();
+    vi.mocked(chrome.debugger.detach).mockReset();
+    vi.mocked(chrome.debugger.sendCommand).mockReset();
   });
 
   test('rejects missing tabId', async () => {
@@ -375,5 +379,51 @@ describe('handleBrowserHandleDialog', () => {
       id: 'req-63',
       error: { code: -32602, message: "action must be 'accept' or 'dismiss'" },
     });
+  });
+
+  test('uses an existing attachment to dismiss a dialog without detaching its input owner', async () => {
+    vi.mocked(chrome.debugger.attach).mockRejectedValueOnce(new Error('Another debugger is already attached'));
+    vi.mocked(chrome.debugger.sendCommand).mockResolvedValue(undefined);
+
+    await handleBrowserHandleDialog({ tabId: 1, action: 'accept', promptText: 'test answer' }, 'req-dialog-owned');
+
+    expect(chrome.debugger.sendCommand).toHaveBeenCalledExactlyOnceWith({ tabId: 1 }, 'Page.handleJavaScriptDialog', {
+      accept: true,
+      promptText: 'test answer',
+    });
+    expect(chrome.debugger.detach).not.toHaveBeenCalled();
+    expect(firstSentMessage()).toMatchObject({ id: 'req-dialog-owned', result: { handled: true, action: 'accept' } });
+  });
+
+  test('preserves Chrome rejection when a different debugger owns the attachment', async () => {
+    vi.mocked(chrome.debugger.attach).mockRejectedValueOnce(new Error('Another debugger is already attached'));
+    vi.mocked(chrome.debugger.sendCommand).mockRejectedValueOnce(
+      new Error('Debugger is not attached to this extension'),
+    );
+
+    await handleBrowserHandleDialog({ tabId: 1, action: 'dismiss' }, 'req-dialog-other');
+
+    expect(chrome.debugger.detach).not.toHaveBeenCalled();
+    expect(firstSentMessage()).toMatchObject({ error: { message: 'Debugger is not attached to this extension' } });
+  });
+
+  test('preserves the no-dialog error when borrowing an existing attachment', async () => {
+    vi.mocked(chrome.debugger.attach).mockRejectedValueOnce(new Error('Another debugger is already attached'));
+    vi.mocked(chrome.debugger.sendCommand).mockRejectedValueOnce(new Error('No dialog is showing'));
+
+    await handleBrowserHandleDialog({ tabId: 1, action: 'accept' }, 'req-dialog-absent');
+
+    expect(firstSentMessage()).toMatchObject({
+      error: { message: 'No JavaScript dialog is currently open on this tab' },
+    });
+  });
+
+  test('does not borrow on an unrelated debugger attachment failure', async () => {
+    vi.mocked(chrome.debugger.attach).mockRejectedValueOnce(new Error('No tab with given id'));
+
+    await handleBrowserHandleDialog({ tabId: 1, action: 'accept' }, 'req-dialog-attach');
+
+    expect(chrome.debugger.sendCommand).not.toHaveBeenCalled();
+    expect(firstSentMessage()).toMatchObject({ error: { message: expect.stringContaining('No tab with given id') } });
   });
 });
