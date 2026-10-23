@@ -57,6 +57,8 @@ export const handleBrowserClickElement = async (
     const x = result.x as number;
     const y = result.y as number;
     await withDebugger(tabId, async () => {
+      // Register dialogs before input can open one and block the renderer.
+      await chrome.debugger.sendCommand({ tabId }, 'Page.enable');
       await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
         type: 'mousePressed',
         x,
